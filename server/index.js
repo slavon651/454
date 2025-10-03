@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import ytdl from 'ytdl-core';
+import ytdl from '@distube/ytdl-core';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,6 +13,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Создаем агент для ytdl с куки (опционально, для лучшей стабильности)
+const agent = ytdl.createAgent();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -32,7 +35,10 @@ app.post('/api/video-info', async (req, res) => {
       return res.status(400).json({ error: 'Неверный YouTube URL' });
     }
 
-    const info = await ytdl.getInfo(url);
+    // Получаем информацию с использованием агента для лучшей стабильности
+    const info = await ytdl.getInfo(url, { agent });
+    
+    // Фильтруем форматы с видео и аудио
     const formats = info.formats
       .filter(format => format.hasVideo && format.hasAudio)
       .map(format => ({
@@ -52,6 +58,7 @@ app.post('/api/video-info', async (req, res) => {
       author: info.videoDetails.author.name,
       formats: formats.sort((a, b) => {
         const getQualityValue = (q) => {
+          if (!q) return 0;
           if (q.includes('2160')) return 2160;
           if (q.includes('1440')) return 1440;
           if (q.includes('1080')) return 1080;
@@ -65,7 +72,9 @@ app.post('/api/video-info', async (req, res) => {
     });
   } catch (error) {
     console.error('Ошибка:', error);
-    res.status(500).json({ error: 'Не удалось получить информацию о видео' });
+    res.status(500).json({ 
+      error: 'Не удалось получить информацию о видео. Попробуйте другое видео или повторите позже.' 
+    });
   }
 });
 
@@ -82,16 +91,20 @@ app.get('/api/download', async (req, res) => {
       return res.status(400).json({ error: 'Неверный YouTube URL' });
     }
 
-    const info = await ytdl.getInfo(url);
-    const title = info.videoDetails.title.replace(/[^\w\s-]/g, '');
+    const info = await ytdl.getInfo(url, { agent });
+    const title = info.videoDetails.title.replace(/[^\w\s-]/g, '').trim() || 'video';
 
     res.header('Content-Disposition', `attachment; filename="${title}.mp4"`);
     res.header('Content-Type', 'video/mp4');
 
-    ytdl(url, { quality: itag }).pipe(res);
+    // Скачиваем с использованием агента
+    ytdl(url, { 
+      quality: itag,
+      agent 
+    }).pipe(res);
   } catch (error) {
     console.error('Ошибка при скачивании:', error);
-    res.status(500).json({ error: 'Не удалось скачать видео' });
+    res.status(500).json({ error: 'Не удалось скачать видео. Попробуйте другое качество.' });
   }
 });
 
