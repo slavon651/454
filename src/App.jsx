@@ -157,6 +157,16 @@ function App() {
                   Выберите качество для скачивания:
                 </h3>
                 
+                {videoInfo.formats.length > 0 && (
+                  <div className="info-notice">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{flexShrink: 0}}>
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
+                      <path d="M12 8V12M12 16H12.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                    <span>Примечание: Высокое качество (720p+) может быть без звука из-за ограничений YouTube API. Используйте 360p или 480p для видео со звуком.</span>
+                  </div>
+                )}
+                
                 <div className="formats-grid">
                   {videoInfo.formats.map((format, index) => (
                     <button

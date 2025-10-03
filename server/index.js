@@ -17,6 +17,13 @@ app.use(express.json());
 // Создаем агент для ytdl с куки (опционально, для лучшей стабильности)
 const agent = ytdl.createAgent();
 
+// Опции по умолчанию для ytdl (обход n-параметра)
+const defaultYtdlOptions = {
+  agent,
+  lang: 'ru',
+  quality: 'highestvideo',
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'API сервер работает' });
@@ -36,39 +43,51 @@ app.post('/api/video-info', async (req, res) => {
     }
 
     // Получаем информацию с использованием агента для лучшей стабильности
-    const info = await ytdl.getInfo(url, { agent });
+    const info = await ytdl.getInfo(url, { 
+      agent,
+      lang: 'ru'
+    });
     
-    // Фильтруем форматы с видео и аудио
-    const formats = info.formats
-      .filter(format => format.hasVideo && format.hasAudio)
+    // Получаем все форматы с видео (YouTube теперь разделяет видео и аудио для высокого качества)
+    const videoFormats = info.formats
+      .filter(format => format.hasVideo && format.qualityLabel) // Только форматы с качеством
       .map(format => ({
-        quality: format.qualityLabel || format.quality,
-        format: format.container,
-        size: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : 'Неизвестно',
-        itag: format.itag
-      }))
-      .filter((format, index, self) => 
-        index === self.findIndex(f => f.quality === format.quality)
-      );
+        quality: format.qualityLabel,
+        format: format.container || 'mp4',
+        size: format.contentLength ? `${(format.contentLength / 1024 / 1024).toFixed(2)} MB` : '~',
+        itag: format.itag,
+        hasAudio: format.hasAudio,
+        fps: format.fps || 30
+      }));
+    
+    // Группируем по качеству и берём лучший вариант для каждого
+    const uniqueFormats = [];
+    const seenQualities = new Set();
+    
+    // Сортируем по качеству (от большего к меньшему)
+    videoFormats.sort((a, b) => {
+      const getQualityValue = (q) => {
+        if (!q) return 0;
+        const match = q.match(/(\d+)/);
+        return match ? parseInt(match[1]) : 0;
+      };
+      return getQualityValue(b.quality) - getQualityValue(a.quality);
+    });
+    
+    // Берём уникальные качества
+    for (const format of videoFormats) {
+      if (!seenQualities.has(format.quality)) {
+        seenQualities.add(format.quality);
+        uniqueFormats.push(format);
+      }
+    }
 
     res.json({
       title: info.videoDetails.title,
       thumbnail: info.videoDetails.thumbnails[info.videoDetails.thumbnails.length - 1].url,
       duration: info.videoDetails.lengthSeconds,
       author: info.videoDetails.author.name,
-      formats: formats.sort((a, b) => {
-        const getQualityValue = (q) => {
-          if (!q) return 0;
-          if (q.includes('2160')) return 2160;
-          if (q.includes('1440')) return 1440;
-          if (q.includes('1080')) return 1080;
-          if (q.includes('720')) return 720;
-          if (q.includes('480')) return 480;
-          if (q.includes('360')) return 360;
-          return 0;
-        };
-        return getQualityValue(b.quality) - getQualityValue(a.quality);
-      })
+      formats: uniqueFormats
     });
   } catch (error) {
     console.error('Ошибка:', error);
@@ -91,17 +110,44 @@ app.get('/api/download', async (req, res) => {
       return res.status(400).json({ error: 'Неверный YouTube URL' });
     }
 
-    const info = await ytdl.getInfo(url, { agent });
+    const info = await ytdl.getInfo(url, { 
+      agent,
+      lang: 'ru'
+    });
+    
     const title = info.videoDetails.title.replace(/[^\w\s-]/g, '').trim() || 'video';
 
     res.header('Content-Disposition', `attachment; filename="${title}.mp4"`);
     res.header('Content-Type', 'video/mp4');
 
-    // Скачиваем с использованием агента
-    ytdl(url, { 
+    // Проверяем, есть ли аудио в выбранном формате
+    const selectedFormat = info.formats.find(f => f.itag == itag);
+    
+    // Скачиваем с использованием агента и дополнительных опций
+    const downloadOptions = {
+      agent,
       quality: itag,
-      agent 
-    }).pipe(res);
+      lang: 'ru',
+      highWaterMark: 1 << 25, // Буфер 32MB для быстрой загрузки
+    };
+    
+    // Если формат без аудио (высокое качество), используем другой подход
+    if (selectedFormat && !selectedFormat.hasAudio) {
+      // Для высокого качества скачиваем только видео (аудио пользователь может добавить позже)
+      console.log(`Скачивание видео без аудио: ${selectedFormat.qualityLabel}`);
+    }
+
+    const stream = ytdl(url, downloadOptions);
+    
+    // Обработка ошибок стрима
+    stream.on('error', (error) => {
+      console.error('Ошибка стрима:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Ошибка при скачивании' });
+      }
+    });
+    
+    stream.pipe(res);
   } catch (error) {
     console.error('Ошибка при скачивании:', error);
     res.status(500).json({ error: 'Не удалось скачать видео. Попробуйте другое качество.' });
